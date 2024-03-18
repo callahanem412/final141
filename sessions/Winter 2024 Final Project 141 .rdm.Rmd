@@ -1,0 +1,1168 @@
+---
+title: "Winter 2024 Final Project 141A"
+author: "Emily Callahan 919436752"
+date: "2024-02-28"
+output: 
+  html_document:
+    df_print: paged
+    number_sections: yes
+    toc: true
+    toc_float: true
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.pos = 'H')
+library(tidyverse) 
+library(magrittr)   
+library(knitr) 
+library(dplyr)  
+library(ggplot2)
+library(htmlwidgets)
+library(tidyr)
+library(xgboost)
+library(boot)
+library(tibble)
+library(kernlab)
+library(caret)
+library(e1071)
+library(randomForest)
+library(class)
+library(meta)
+```
+
+***
+
+# Abstract
+In this course project, my objective is to develop a predictive model capable of accurately forecasting a specific outcome for each trial based on the analysis of neural activity and stimuli data. I will begin by thoroughly examining the datasets, detailing the shifts in neural activity observed in mice across sessions and trials. To aggregate data across trials effectively, I will propose a methodology that involves analyzing sessions and extracting discernible patterns and variances. This process will employ techniques like Principal Component Analysis (PCA) and clustering to unveil meaningful insights. By leveraging these methodologies, I aim to pinpoint significant features contributing to outcome prediction. Subsequently, I will utilize machine learning algorithms such as logistic regression and Support Vector Machines (SVM) to construct and evaluate the predictive model, assessing its accuracy and misclassification error rate. Finally, I will validate the model's performance on test datasets. Through this endeavor, I intend to produce a robust predictive model capable of accurately forecasting trial outcomes based on neural activity and stimuli data.
+ 
+
+***
+
+# Introduction
+I will examine a subset of data obtained from Steinmetz et al. (2019) to delve into the neural activity and decision-making of mice. The study involved experiments conducted on four mice across 18 sessions (originally, the dataset comprised 10 mice and 39 sessions). Each session encompassed numerous trials where mice were presented with visual stimuli on both sides randomly. These stimuli varied in contrast levels, and mice responded to them using a controlled wheel, with subsequent rewards or penalties based on their decisions. Throughout the experiments, neuronal activity in the mice's visual cortex was recorded in the form of spike trains, representing timestamps of each neuron's firing. Each trial is associated with several variables, including the type of reward or penalty, contrast levels of stimuli, time bins for spike activity, the spike count of neurons, and the brain region where each neuron is situated.
+
+Studying the neural activity and decision-making processes in mice offers insights that can be extrapolated to human behavior and decision-making in response to specific stimuli. Human decision-making involves processing sensory information and executing actions often motivated by a reward system. While multiple brain regions are involved, the correlation between neuronal activity and decision-making isn't always straightforward. Neurons associated with decision-related signals may exhibit firing patterns indicative of chosen actions before the action is actually performed. This mouse experiment enables the formulation of hypotheses and inferences regarding human behavior, particularly regarding stimuli's influence on actions in engaged or disengaged states. It's important to acknowledge individual differences, leading to varying levels of behavioral engagement and responses to sensory stimuli within tasks.
+
+By leveraging insights from mouse decision-making experiments, we can advance our understanding of the neural mechanisms underlying human behavior and its impact on daily actions.
+
+***
+
+## Background
+I will outline details regarding the variables present in this dataset, along with the experimental setup and data acquisition procedure. As mentioned earlier, my focus lies on a subset of data collected by Steinmetz et al. (2019) from four mice across 18 sessions. In each session, mice encountered visual stimuli with varying levels of contrast, providing a spectrum of sensory input for processing. Subsequently, the mice made decisions based on these stimuli, leading to either a reward or penalty as an outcome. The neural activity of the mice was captured in the form of spike trains, facilitating the analysis of their decision-making processes. This experiment serves to elucidate how sensory stimuli influence decision-making in both animals and humans. Previous studies have indicated that specific neurons in the brain exhibit signals related to choice before the action is executed. By scrutinizing neural activity during the trials, this experiment aims to uncover correlations between neurons and their firing patterns, shedding light on the decision-making processes of mice.
+
+```{r}
+setwd("/Users/emilycallahan/Downloads/sessions")
+session=list()
+for(i in 1:18)
+  session[[i]]=readRDS(paste('session',i,'.rds',sep=''))
+```
+
+
+```{r, echo = FALSE}
+#determine the number of sessions in the 'session' list
+n.session=length(session)
+
+#create a tibble called 'meta' to store the summar statistics
+meta <- tibble(
+  #Initialize 'mouse_name' column with 'name
+  mouse_name = rep('name',n.session),
+  #Initialize 'date_exp' column with 'dt'
+  date_exp =rep('dt',n.session),
+  #Initialize 'n_brain_area' column with zeros
+  n_brain_area = rep(0,n.session),
+  #Initialize 'n_neurons' column with zeros
+  n_neurons = rep(0,n.session),
+  #Initialize 'n_trials' column with zeros
+  n_trials = rep(0,n.session),
+  #Initialize 'success_rate' column with zeros
+  success_rate = rep(0,n.session)
+)
+
+
+#Iterate over each session to calculate summary statistics
+#access the i-th session
+for(i in 1:n.session){
+  tmp = session[[i]];
+#extract relevant information from the current sessions and update the corresponding columns in 'meta'
+#Store mouse name in the 'mouse_name' column
+  meta[i,1]=tmp$mouse_name;
+  #Store date of experiment in the date_exp column
+  meta[i,2]=tmp$date_exp;
+  #Calculate the number of unique brain areas and store in the 'n_brain_area' column
+  meta[i,3]=length(unique(tmp$brain_area));
+  #Determine the number of neurons and store in the n_neurons' column
+  meta[i,4]=dim(tmp$spks[[1]])[1];
+  #calculate the number of trials and store in the n_trials column
+  meta[i,5]=length(tmp$feedback_type);
+  #Calculate the average success rate and store in the 'success_rate' column
+  meta[i,6]=mean(tmp$feedback_type+1)/2;
+}
+```
+
+
+```{r, echo = FALSE}
+#Render the 'meta' tibble as an HTML table
+#specify that the output format should be html
+#add CSS classes to the table for styling
+#specify the number of decimal places to displayin numeric columns
+
+kable(meta, format = "html", table.attr = "class='table table-striped'",digits=2) 
+```
+<p style="text-align: center;">**Table 1**. Data Summary Across All Sessions </p>
+
+Table 1 provides an overview of session counts and mouse names, along with the experiment dates, trial numbers, neuron counts, brain area numbers, and success rates for each session and mouse. This serves as a concise summary for each session and mouse. It's worth noting that sessions vary in terms of neuron and trial counts (dimensions), prompting a focused analysis on specific sessions or variables, particularly `spks`, instead of amalgamating all information into one dataframe.
+
+Of particular interest are sessions 1, exhibiting the lowest success rate, and session 17, with the highest success rate. Despite potential behavioral differences between the mice in these sessions, I plan to select a random trial from each to examine the results. I aim to discern the variable contributing to the 20% fluctuation in success rate from lowest to highest. This variance could stem from trial or neuron counts, or perhaps it's influenced by differences between mice.
+
+#### Each sessions displays the following variables. 
+```{r}
+names(session[[1]])
+```
+The variable `contrast_left` denotes the contrast level of visual stimuli presented to the left side of the mice, indicating the strength of the stimuli. Similarly, `contrast_right` represents the contrast level of stimuli presented to the right side. `feedback_type` signifies the feedback type given to mice based on their decisions, determining whether they receive a reward or penalty, with values ranging from 1 for success to -1 for failure. `mouse_name` provides the name of each individual mouse in the dataset. `brain_area` specifies the brain region where neural activity was recorded. `date_exp` records the date of each session. `spks` captures neural activity in spike trains, representing the number of neuron spikes in defined time bins. Finally, `time` indicates the center points of time bins for recorded neural activity.
+
+
+
+Number of Trials Accross Sessions - the bar plot shows the number of trials in each session. Differences in the number of trials across sessions indicate heterogeneity in experiemental conditions. 
+
+```{r, echo = FALSE}
+#dermine the number of sessions 
+sessions <- length(session)
+#calcuate the number of neurons in each session using the 'sapply' function
+neurons <- sapply(session, function(s)length(s$spks))
+
+#calculate the number of trials in each session using the 'sapply' function
+num_trials <-sapply(session,function(s) length(s$spks))
+
+#create a bar plot of the number of trials across sessions 
+barplot(num_trials,
+        xlab = "Session",
+        ylab = "Number of Trials",
+        main = "Number of Trials Across Sessions")
+```
+<p style="text-align: center;">**Figure 1**. Number of Trials Across Sessions </p>
+
+Brain Area Distribution - the bar plot below illustrates the frequency distribution of brain areas across mice. Displaying how specific brain areas are more dominate in the records of the experiment and that certain brain areas are hardly used. This displays heterogeneity.
+
+```{r, echo = FALSE}
+#calculate the number of sessions per mouse using 'sapply', 'unlist', and 'lapply'
+sessions_per_mouse <- sapply(unique(unlist(lapply(session,function(s)s$mouse_name))),
+                             function(m)sum(unlist(lapply(session, function(s)s$mouse_name==m))))
+
+#calculate the distribution of brain areas across sessions using 'table','unlist',and 'lapply'
+brain_area_distribution <- table(unlist(lapply(session,function(s)s$brain_area)))
+
+#print the sessions per mouse
+cat("Sessions per mouse:\n")
+print(sessions_per_mouse)
+
+#print the brain area distribution
+cat("Brain Area Distribution:\n")
+print(brain_area_distribution)
+```
+
+
+```{r, echo = FALSE}
+#create a bar plot of the brain area distribution using 'barplot'
+barplot(brain_area_distribution, xlab= "Brain Area", ylab = "frequency",
+        main ="Brain Area Distribution Amongst Mice")
+```
+<p style="text-align: center;">**Figure 2**. Brain Area Distribution Amongst Mice </p>
+
+```{r, echo = FALSE}
+unique(session[[1]]$brain_area) # names of each unique brain area
+length(session[[1]]$feedback_type) # number of trials
+nrow(session[[1]]$spks[[1]]) # number of neurons
+```
+
+Extracting some information about session 1 to get me started. The 734 neurons in Session 1 are located in ACA, MOs, LS, root, VISp, CA3, SUB, and DG of the mouse brain. The success rate of the mice is around 0.61. I can visualize the activities of the 8 brain areas across the 114 trials.
+
+```{r, include = FALSE}
+sessionnum = 1
+trialNumber = 81 # random trial in the 114 trials
+
+spk.trial = session[[sessionnum]]$spks[[trialNumber]]
+area = session[[sessionnum]]$brain_area
+
+# calculate the number of spikes for each neuron during this trial 
+spk.count=apply(spk.trial,1,sum)
+
+# average spikes across neurons that live in the same area 
+
+tmp <- data.frame(
+  area = area,
+  spikes = spk.count
+)
+# Calculate the average by group
+spk.average.dplyr =tmp %>%
+  group_by(area) %>%
+  summarize(mean= mean(spikes))
+```
+
+
+
+```{r, echo = FALSE}
+# function of above code to apply to all trials
+
+averagespkarea <- function(trialNumber, sessionnum){
+  spktrial = sessionnum$spks[[trialNumber]]
+  area = sessionnum$brain_area
+  spkCount = apply(spktrial, 1, sum)
+  spkAverage = tapply(spkCount, area, mean)
+  return(spkAverage)
+  }
+
+averagespkarea(81, session[[sessionnum]])
+```
+
+Function to compute the average spikes per brain area, which I applied to session 1, trial 73. An interesting observation emerged: the average spike count for the brain area SUB significantly exceeds that of other brain areas, while the average spike count for the root brain area notably falls below the others. This observation prompts me to investigate whether this pattern persists across all trials. Considering this is a single trial, I anticipate that the SUB area won't consistently exhibit the highest average spikes across all trials but expect it to rank among the top three in my visual analysis. Similarly, I'll monitor the position of the root area, which displays the lowest average spikes in this trial, across all trials. 
+
+```{r, echo = FALSE}
+numoftrials = length(session[[sessionnum]]$feedback_type)
+numofA = length(unique(session[[sessionnum]]$brain_area ))
+
+# create a data frame that contains the average spike counts for each area, feedback type, two contrasts, and trial number
+
+trialsum = matrix(nrow = numoftrials, ncol= numofA+1+2+1)
+for(i in 1:numoftrials){
+  trialsum[i,]=c(averagespkarea(i, session[[sessionnum]]),
+                          session[[sessionnum]]$feedback_type[i],
+                        session[[sessionnum]]$contrast_left[i],
+                        session[[sessionnum]]$contrast_right[i],
+                        i)
+}
+
+colnames(trialsum)=c(names(averagespkarea(i,session[[sessionnum]])), 'Feedback', 'Left Contrast', 'Right Contrast', 'Trial Number')
+
+# turn into data frame
+trialsum <- as_tibble(trialsum)
+head(trialsum)
+```
+
+This displays the first 6 rows of the data frame showing all 8 brain areas, the feedback type (success or failure), left and right contrasts, and the trial number. From the first 6 trials, we can see that brain area SUB has the highest average spike count and either brain area ACA, MOs, or root has the lowest average spike count. This is to be expected because the average spike count per brain area fluctuates. 
+
+```{r, echo = FALSE, fig.height = 4, fig.width = 5, fig.align = "center"}
+areacolor = rainbow(n=numofA, alpha=0.7)
+
+plot(x=1, y=0, col='white',xlim=c(0,numoftrials), ylim=c(0.5,3.5), xlab="Trials",ylab="Average Spike Counts", main=paste("Spikes Per Area in Session", sessionnum))
+
+
+for(i in 1:numofA){
+  lines(y = trialsum[[i]], x = trialsum$`Trial Number`, col = areacolor[i],lty=2,lwd=1)
+  lines(smooth.spline(trialsum$`Trial Number`, trialsum[[i]]), col = areacolor[i],lwd=3)
+}
+
+legend("topright", 
+  legend = colnames(trialsum)[1:numofA], 
+  col = areacolor, 
+  lty = 1, 
+  cex = 0.8
+)
+```
+<p style="text-align: center;">**Figure 3**. Spikes Per Brain Area in Session 1 </p>
+
+In Figure 3, the brain areas with the lowest average spike counts are ACA, root, and MOs, while brain area SUB consistently exhibits the highest average spike count across all trials, aligning with the findings from the average spike area function mentioned earlier. Additionally, it's evident that as trial numbers increase, average spike counts generally decrease. This trend raises questions about potential factors influencing the observed pattern. One possibility is that mice may become fatigued over successive trials, leading to decreased activity and reduced responsiveness to incentives. Alternatively, individual differences among mice could contribute to varying levels of activity, with some being more susceptible to external influences than others.
+
+```{r, echo = FALSE}
+#Create an empty success matrix with 18 rows and 3 columns
+success.matrix <- base::matrix(nrow = 18, ncol = 3)
+#Create an empty list to store names
+names.list = list()
+
+
+#define a function to calculate success percentage for a given session
+success.percent <-function(s) {
+  z = sum(session[[s]]$feedback_type == 1) 
+
+  percent.success = 100*z/length(session[[s]]$feedback_type)
+  return(percent.success)
+}
+
+#iterate over sessions and calculate success percentage
+for(s in 1:18) {
+  success.matrix[s,] = c(s,success.percent(s), session[[s]]$mouse_name)
+}
+#assign column names to success matrix
+colnames(success.matrix)= c("session.number", "success.percent","mouse.name")
+#convert success matrix to a tibble
+success.table <- as_tibble(success.matrix)%>%
+  mutate(success.percent = as.numeric(success.percent))%>%
+           mutate(session.number = as.numeric(session.number))
+
+#create a ggplot with success table data
+ggplot(success.table,aes(x = session.number, y = success.percent))+
+                         geom_point(aes(group= mouse.name,color = mouse.name))+
+                           theme_bw()+
+                           geom_line(aes(group= mouse.name,color = mouse.name))+
+                           ylab("success percentage")+
+                           xlab("session number")
+
+```
+<p style="text-align: center;">**Figure 4**. Success Rate by Session </p>
+
+```{r, echo = FALSE}
+#creating an empty matrix with 18 rows and 3 columns
+mean.matrix <- base::matrix(nrow = 18 , ncol = 3)
+names.list = list()
+
+for(s in 1:18){
+  for(t in length(session[[s]]$feedback_type)){
+    spks.mean = mean(c(session[[s]]$spks[[t]]))
+  }
+  mean.matrix[s,] = c(s,spks.mean, session[[s]]$mouse_name)
+}
+#assign colnames
+colnames(mean.matrix) = c("Session Number", "Average Spike Count", "Mouse Name")
+#converting the matrix to a tibble for easier data manipulation
+mean.table <- as_tibble(mean.matrix)
+
+session.number = mean.table$`Session Number`
+mouse.name = mean.table$`Mouse Name`
+spks.mean = mean.table$`Average Spike Count`
+
+#creating a scatter plot with lines
+ggplot(mean.table, aes(x = session.number, y = spks.mean))+
+ geom_point(aes(group= mouse.name,color = mouse.name))+
+ theme_bw()+
+ geom_line(aes(group= mouse.name,color = mouse.name))+
+ ylab("Average Spike Count")+
+ xlab("Session Number")
+```
+<p style="text-align: center;">**Figure 5**. Average Spike Count by Session </p>
+
+From these graphs we can visulize that session 17 has the highest success rate amongst sessions and that session 1 has the lowest Success Rate. 
+
+Now that I visualized the average spikes per brain area in session 1 with the lowest success rate, I will compare it to the average spikes per brain area in session 17 with the highest success rate and compare my findings.
+
+
+Session 17
+
+```{r, echo = FALSE}
+unique(session[[17]]$brain_area) # names of each unique brain area
+length(session[[17]]$feedback_type) # number of trials
+nrow(session[[17]]$spks[[1]]) # number of neurons
+```
+
+Extracting information about session 17 to get me started. The 565 neurons in Session 17 are located in root, VPL, VPM, RT, MEA, and LD of the mouse brain. The success rate of the mice is around 0.83. I can visualize the activities of the 6 brain areas across the 224 trials.
+
+```{r, include = FALSE}
+sessionnum = 17
+trialNumber = 81 # random trial in the 224 trials
+
+spk.trial = session[[sessionnum]]$spks[[trialNumber]]
+area = session[[sessionnum]]$brain_area
+
+# calculate the number of spikes for each neuron during this trial 
+spk.count=apply(spk.trial,1,sum)
+
+# average spikes across neurons that live in the same area 
+tmp <- data.frame(
+  area = area,
+  spikes = spk.count
+)
+# Calculate the average by group
+spk.average.dplyr =tmp %>%
+  group_by(area) %>%
+  summarize(mean= mean(spikes))
+```
+
+```{r, echo = FALSE}
+# function of above code to apply to all trials
+averagepkarea <- function(trialNumber, sessionnum){
+  spktrial = sessionnum$spks[[trialNumber]]
+  area = sessionnum$brain_area
+  spkCount = apply(spktrial, 1, sum)
+  spkAverage = tapply(spkCount, area, mean)
+  return(spkAverage)
+  }
+
+averagepkarea(81, session[[sessionnum]])
+```
+
+I utilized the same function for calculating average spikes per brain area and applied it to session 17, trial 81. A notable observation is the relatively minor disparity in average spike counts among the brain areas compared to session 1. Although brain area VPL exhibits the highest average spike count and the root area the lowest, the differences are not substantial. This observation prompts me to consider consistency across all trials as I visualize the data. I anticipate that the resulting visualization will lack a clear distinction between brain areas with the highest and lowest average spike counts compared to session 1. I expect this to fluctuate significantly across all trials.
+
+```{r, echo = FALSE}
+numoftrials = length(session[[sessionnum]]$feedback_type)
+numofA = length(unique(session[[sessionnum]]$brain_area ))
+
+#create a data frame that contains the average spike counts for each area, feedback type, two contrasts, and trial number
+
+trialsum = matrix(nrow = numoftrials, ncol= numofA+1+2+1)
+for(i in 1:numoftrials){
+  trialsum[i,]=c(averagespkarea(i, session[[sessionnum]]),
+                          session[[sessionnum]]$feedback_type[i],
+                        session[[sessionnum]]$contrast_left[i],
+                        session[[sessionnum]]$contrast_right[i],
+                        i)
+}
+
+colnames(trialsum)=c(names(averagespkarea(i,session[[sessionnum]])), 'Feedback', 'Left Contrast', 'Right Contrast', 'Trial Number')
+
+# turn into data frame
+trialsum <- as_tibble(trialsum)
+head(trialsum)
+```
+
+
+
+This displays first 6 rows of the data frame showing all 8 brain areas, the feedback type (success or failure), left and right contrasts, and the trial number. From the first 6 trials, we can see that brain area LD has the highest average spike count by a large amount and brain area MEA has the lowest average spike count. tThis is to be expected because the average spike count per brain area fluctuates. This differs from my conclusions for trial 81, so I am curious to see what the overall picture looks like for session 17.
+
+```{r, echo = FALSE, fig.height = 4, fig.width = 5, fig.align = "center"}
+areacolor = rainbow(n=numofA, alpha=0.7)
+
+plot(x=1, y=0, col='white',xlim=c(0,numoftrials), ylim=c(0.5,3.5), xlab="Trials",ylab="Average Spike Counts", main=paste("Spikes Per Area in Session", sessionnum))
+
+
+for(i in 1:numofA){
+  lines(y = trialsum[[i]], x = trialsum$`Trial Number`, col = areacolor[i],lty=2,lwd=1)
+  lines(smooth.spline(trialsum$`Trial Number`, trialsum[[i]]), col = areacolor[i],lwd=3)
+}
+
+legend("topright", 
+  legend = colnames(trialsum)[1:numofA], 
+  col = areacolor, 
+  lty = 1, 
+  cex = 0.8
+)
+```
+<p style="text-align: center;">**Figure 6**. Spikes Per Brain Area in Session 17 </p>
+
+Figure 6 illustrates significant variability in the average spike counts for brain areas LD, VPL, and RT. This graph differs markedly from the spike per area graph for session 1, as no discernible pattern emerges, and the brain areas with the lowest average spike counts vary from trial to trial. Consequently, I cannot confirm earlier predictions regarding consistency. While brain area LD consistently displays the highest average spike count, identifying the brain area with the lowest count proves challenging. Additionally, there is no clear trend indicating a decrease in average spike counts as trial numbers increase, except for brain area root, which follows this pattern. Unlike in session 1, where fatigue may have influenced mice behavior, this conclusion is not evident here.
+
+
+```{r, include = FALSE}
+
+feedback_list <- list()
+
+for (i in 1:length(session)) {
+  feedback_data <- session[[i]]$feedback_type
+  
+  # Add the feedback data to the list
+  feedback_list[[i]] <- feedback_data
+}
+```
+
+
+To further analyze spikes, I will plot density plots of spikes per time.
+
+```{r, include = FALSE}
+mousenames <- c()  
+
+# Iterate over each session
+for (i in 1:length(session)) {
+  mouse <- session[[i]]$mouse_name
+  
+  mousenames <- c(mousenames, mouse)
+}
+
+uniquemousenames <- unique(mousenames)
+```
+
+```{r, echo = FALSE, fig.height = 4, fig.width = 5, fig.align = "center"}
+spikespertime <- list()
+
+for (i in 1:length(session)) {
+  mouse <- session[[i]]$mouse_name
+  spikematrix <- session[[i]]$spks
+  timeduration <- session[[i]]$time
+  
+  spikes <- 0
+  
+  # Calculate the sum of spikes per time for each matrix
+  for (j in 1:length(spikematrix)) {
+    spikes <- spikes + sum(spikematrix[[j]])
+  }
+  
+  # numeric value of time_duration
+  timedurationnumeric <- sapply(timeduration, as.numeric)
+  
+  #calculate spikes per time
+  spikespertime[[i]] <- spikes / sum(timedurationnumeric)
+}
+
+#create a vector of spikes per time values
+spikepertimeval <- unlist(spikespertime)
+
+densityplot <- density(spikepertimeval)
+
+plot(densityplot, main = "Density Plot of Spikes per Time", xlab = "Spikes per Time", ylab = "Density")
+
+```
+<p style="text-align: center;">**Figure 7**. Density Plot of Spikes Per Time for All Mice </p>
+
+Figure 7 presents the combined density plot illustrating spikes per time for each mouse. The spikes per time with the highest density falls at approximately 0.04888, lying between 0.04 and 0.05, consistent with the estimation from Figure 6. Notably, Cori's density curve peaks around 0.05, exhibiting a narrow spread, indicative of minimal variability in spikes. Conversely, the other three mice peak between 0.03 and 0.04, with broader distributions, suggesting greater variability in spikes. Furthermore, while the density for the three mice peaks at around 40 to 50, Cori's density peaks significantly higher, at around 140, showcasing a substantial discrepancy.
+
+Earlier, I compared sessions 1 and 17, corresponding to Cori and Lederberg, respectively, and concluded their distinctiveness based on violin plots. This conclusion aligns with the analysis presented here.
+
+This plot is included to facilitate comparison among the four unique mice, with each distinguished by color. It allows for clear observation of differences in density plots of spikes per time. While Figure 6 offered an overall density plot, Figure 7 emphasizes Cori's distinctiveness, evident in its narrower spread and higher peak compared to the other three mice. This graphical representation is instrumental in discerning spread, shape, peaks, and variations within the four mice.
+
+Now I will demonstrate a sampling distribution using the bootstrap method with my spikes per time values.
+
+
+```{r, include = FALSE}
+densityplots <- list()
+
+for (mousename in uniquemousenames) {
+  # Subset the spikes per time values for the current mouse name
+  spikepertimeval <- unlist(spikespertime[mousenames == mousename])
+  
+  # Create a density plot for the current mouse name
+  densityplot <- density(spikepertimeval)
+  
+  # Store the density plot in the list
+  densityplots[[mousename]] <- densityplot
+}
+```
+
+```{r, echo = FALSE, fig.height = 4, fig.width = 5, fig.align = "center"}
+# Calculate the maximum density value
+maxdensity <- max(sapply(densityplots, function(x) max(x$y)))
+
+#create an empty plot to hold the combined density plots
+plot(NA, xlim = range(spikespertime), ylim = c(0, maxdensity),
+     main = "Combined Density Plot of Spikes per Time",
+     xlab = "Spikes per Time", ylab = "Density")
+
+colors <- rainbow(length(densityplots))
+
+for (i in 1:length(densityplots)) {
+  
+  mousename <- names(densityplots)[i]
+  densityplot <- densityplots[[i]]
+  
+  # Add the density plot curve to the combined plot
+  lines(densityplot, col = colors[i])
+  
+  legend("topright", legend = mousename, col = colors[i], lwd = 2)
+}
+
+legend("topright", legend = names(densityplots), col = colors, lwd = 2)
+
+```
+<p style="text-align: center;">**Figure 8**. Combined Density Plot of Spikes Per Time for Each Mouse </p>
+
+```{r, echo = FALSE}
+# Find the spikes per time number with the highest density
+max_density_val <- -Inf
+max_density_spk_time <- NULL
+
+for (i in 1:length(densityplots)) {
+  
+  densityplot <- densityplots[[i]]
+  
+  # Find the index of the maximum density value
+  max_density_index <- which.max(densityplot$y)
+  
+  # Get the spikes per time number with the highest density
+  spikespertimevalue <- densityplot$x[max_density_index]
+  
+  #check if it has higher density than previous maximum
+  if (densityplot$y[max_density_index] > max_density_val) {
+    max_density_val <- densityplot$y[max_density_index]
+    max_density_spk_time <- spikespertimevalue
+  }
+}
+
+print(paste("Spikes Per Time with Highest Density:", max_density_spk_time))
+
+```
+
+...
+
+```{r, echo = FALSE, fig.height = 4, fig.width = 5, fig.align = "center"}
+custom_stat <- function(data, index) {
+  mean(data[index])
+}
+
+n_iterations <- 1000
+
+# bootstrap resampling
+bootstrap_result <- boot(spikepertimeval, statistic = custom_stat, R = n_iterations)
+
+# Get the bootstrap estimates
+bootstrap_est <- bootstrap_result$t
+
+summary(bootstrap_est)
+
+hist(bootstrap_est, breaks = 30, col = "lightblue", main = "Bootstrap Distribution", xlab = "Statistic")
+
+confidence_intervals <- quantile(bootstrap_est, probs = c(0.025, 0.975))
+
+cat("95% Confidence Intervals:")
+cat("\nLower:", confidence_intervals[1])
+cat("\nUpper:", confidence_intervals[2])
+
+```
+<p style="text-align: center;">**Figure 9**. Bootstrap Distribution of Spikes per Time Mean Values </p>
+
+Figure 9 displays the bootstrap distribution of mean spikes per time values across 1000 iterations. The distribution appears somewhat bell-shaped but is slightly skewed to the right, indicating that most estimates are centered around a single value with a slight shift towards the higher end. The peak falls between 0.04 and 0.05, aligning with previous visualizations. The range of values is relatively narrow, mainly spanning from 0.03 to 0.07, with one outlier beyond 0.07, suggesting limited variability and uncertainty in the estimates. I also constructed 95% confidence intervals based on the bootstrap distribution, using the 2.5th and 97.5th percentiles as the lower and upper bounds, respectively. Notably, 95% of values lie within this interval.
+
+This bootstrap visualization is essential as it allows us to approximate the true population using observed samples when the true population is unknown. By drawing samples with replacement and equal probability, the bootstrap procedure estimates the sampling distribution. Consistent with previous visualizations, this display exhibits similar characteristics in terms of shape, range, and mean value.
+
+***
+
+# Data Integration
+
+```{r, echo = FALSE, warning = FALSE}
+# Determine the maximum number of trials across all sessions
+max_trials <- max(sapply(session, function(x) length(x$spks)))
+
+# Initialize an empty matrix to store the average spike matrix
+average_spike_matrix <- matrix(0, nrow = max_trials, ncol = 40)
+
+# Initialize a counter to keep track of the number of trials in each session
+session_trial_counter <- rep(0, length(session))
+
+for (i in 1:length(session)) {
+  num_trials <- length(session[[i]]$spks)
+  
+  for (j in 1:num_trials) {
+    spike_matrix <- session[[i]]$spks[[j]]
+    
+    # Check if the spike matrix has more rows than the maximum number of trials
+    if (dim(spike_matrix)[1] > max_trials) {
+      spike_matrix <- spike_matrix[1:max_trials, ]
+    }
+    
+    # Pad the spike matrix with zeros to match the maximum number of trials
+    padded_spike_matrix <- rbind(spike_matrix, matrix(0, nrow = max_trials - dim(spike_matrix)[1], ncol = 40))
+    
+    # Add the spike counts to the average spike matrix
+    average_spike_matrix <- average_spike_matrix + padded_spike_matrix
+    
+    session_trial_counter[i] <- session_trial_counter[i] + 1
+  }
+}
+
+# Calculate the average spike matrix for each session
+session_average_spike_matrix <- average_spike_matrix / session_trial_counter
+
+# Convert session_average_spike_matrix to a dataframe
+session_average_spike_matrix_df <- as.data.frame(session_average_spike_matrix)
+
+print(dim(session_average_spike_matrix_df))
+head(session_average_spike_matrix_df)
+```
+These are the initial six rows of the dataframe showcasing average spike matrices across all sessions. To accommodate the varying dimensions across sessions, I initially identified the maximum number of trials across all sessions. Then, I iterated through all trials and sessions, padding the spike matrix with zeros if they did not match the maximum trial count. Finally, I computed the average spike matrix for each session, resulting in a 447x40 matrix. The presented dataframe displays the first six rows. I will utilize this dataframe for further analysis, including PCA and clustering.
+...
+
+```{r, echo = FALSE, fig.height = 4, fig.width = 5, fig.align = "center"}
+pca_result <- prcomp(session_average_spike_matrix, scale = TRUE)
+# principal components
+principal_comp <- pca_result$x
+
+# proportion of variance explained by each component
+variance_explained <- pca_result$sdev^2 / sum(pca_result$sdev^2)
+
+# Scree plot
+plot(1:length(variance_explained), variance_explained, type = "b",
+     xlab = "Principal Component", ylab = "Proportion of Variance Explained", main = "Scree Plot")
+```
+<p style="text-align: center;">**Figure 10**. Scree Plot of Principal Components vs Proportion of Variance Explained </p>
+
+Figure 10 illustrates a scree plot representing principal components (PCs) on the x-axis and the proportion of variance explained on the y-axis. While there are 40 principal components depicted, the critical ones are the first four. This is evident as, beyond the fourth PC, the variance sharply declines, indicating that subsequent components contribute less significantly to explaining the data's variation. Thus, it can be inferred that the first four PCs are instrumental in elucidating variances within the average spike matrix across all sessions. With this insight, I can opt to retain the first four principal components for further analysis of the average spike matrix structure.
+...
+
+```{r, include = FALSE}
+num_components <-4 
+selected_components <- principal_comp[, 1:num_components]
+```
+
+```{r, echo = FALSE, fig.height = 4, fig.width = 5, fig.align = "center"}
+set.seed(126)
+k <- 4 
+
+# K-means clustering
+kmeans_result <- kmeans(selected_components, centers = k)
+
+# Get the cluster assignments for each trial
+cluster_labels <- kmeans_result$cluster
+
+# Create a data frame combining the selected principal components and cluster labels
+data <- data.frame(PC1 = selected_components[, 1],
+                   PC2 = selected_components[, 2],
+                   PC3 = selected_components[, 3],
+                   PC4 = selected_components[, 4],
+                   Cluster = as.factor(cluster_labels))
+
+ggplot(data, aes(x = PC1, y = PC2, color = Cluster)) +
+  geom_point() +
+  labs(x = "PC1", y = "PC2") +
+  scale_color_manual(values = c("red", "blue", "green", "orange")) +
+  theme_minimal()
+
+```
+<p style="text-align: center;">**Figure 11**. Scatter Plot from K-Means Clustering </p>
+
+Figure 11 displays a scatterplot generated from the k-means clustering method. I adjusted the number of clusters to align with the first four principal components previously identified as significant. Upon observation, the first two clusters appear close to each other yet well-separated, indicating effective clustering performance. However, the third cluster appears less tightly clustered and more dispersed, while the fourth cluster exhibits significant spread, suggesting greater variability within. Additionally, clusters 1 and 2 contain substantially more data points compared to the other clusters. Notably, cluster 4 includes two outliers that are part of the cluster but are distinctly separated from the rest of the data points. In summary, k-means clustering proves to be a reliable method as the clusters are distinct, easily discernible, well-separated, and largely tightly clustered.
+...
+
+```{r, echo = FALSE, fig.height = 4, fig.width = 5, fig.align = "center"}
+#hierarchical clustering
+hclust_result <- hclust(dist(selected_components))
+
+k <- 4 
+# Cut the dendrogram to obtain cluster assignments
+cluster_labels <- cutree(hclust_result, k = k)
+
+# Create a data frame combining the selected principal components and cluster labels
+data <- data.frame(PC1 = selected_components[, 1],
+                   PC2 = selected_components[, 2],
+                   PC3 = selected_components[, 3],
+                   PC4 = selected_components[, 4],
+                   Cluster = as.factor(cluster_labels))
+
+ggplot(data, aes(x = PC1, y = PC2, color = Cluster)) +
+  geom_point() +
+  labs(x = "PC1", y = "PC2") +
+  scale_color_manual(values = c("red", "blue", "green", "orange")) +
+  theme_minimal()
+```
+<p style="text-align: center;">**Figure 12**. Scatter Plot from Hierarchical Clustering </p>
+
+Figure 12 depicts the scatterplot generated by the hierarchical clustering method, with the number of clusters adjusted to correspond with the first four principal components identified earlier. Notably, the first cluster appears tightly clustered, indicating strong intra-cluster similarity. However, clusters 2 and 3 exhibit greater spread, suggesting increased variability within these clusters. Cluster 3 notably contains fewer data points compared to clusters 1 and 2. Moreover, cluster 4 comprises only two data points, each separate from the other, leading to the conclusion that this entire cluster may be an outlier.
+
+While some overlap between clusters is apparent, it is insufficient to imply similarity or ambiguity between data points. In summary, hierarchical clustering proves to be a viable method as the clusters are mostly distinct and easily discernible, although k-means clustering emerges as a stronger approach.
+...
+
+```{r, echo = FALSE, fig.height = 4, fig.width = 5, fig.align = "center"}
+set.seed(123)
+# spectral clustering
+k <- 4 
+spectral_result <- specc(selected_components, centers = k)
+
+# Assign cluster labels
+cluster_labels <- as.factor(spectral_result)
+
+# Create a data frame combining the selected principal components and cluster labels
+data <- data.frame(PC1 = selected_components[, 1],
+                   PC2 = selected_components[, 2],
+                   PC3 = selected_components[, 3],
+                   PC4 = selected_components[, 4],
+                   Cluster = cluster_labels)
+
+ggplot(data, aes(x = PC1, y = PC2, color = Cluster)) +
+  geom_point() +
+  labs(x = "PC1", y = "PC2") +
+  scale_color_manual(values = c("red", "blue", "green", "orange")) +
+  theme_minimal()
+```
+<p style="text-align: center;">**Figure 13**. Scatter Plot from Spectral Clustering </p>
+
+Figure 13 presents the scatterplot generated by the spectral clustering method, with the number of clusters adjusted to align with the first four principal components previously identified as significant. Notably, the first cluster appears relatively tightly clustered, suggesting strong intra-cluster similarity and containing the most data points. However, the remaining clusters exhibit significant spread and overlap, indicating poor clustering performance and greater variability within. Additionally, one cluster, adjacent to another, contains two outliers significantly distant from all other clusters. These three clusters possess significantly fewer data points than the first cluster and lack distinctiveness or ease of differentiation. In summary, spectral clustering proves unsuitable for this average spike matrix data, as the clusters are neither tightly clustered nor distinct.
+...
+
+***
+
+# Model Training and Prediction
+I'm partitioning the average spike matrix across all sessions data into training and testing sets, adhering to an 80% and 20% split. Taking into consideration the four important principal components, I'm evaluating various predictive models on the training and testing datasets to identify the one with the highest accuracy score. This selected model will then be applied to the actual testing data provided.
+...
+
+```{r, include = FALSE}
+labels <- numeric()
+
+for (session_num in 1:18) {
+  session_labels <- session[[session_num]]$feedback_type
+  
+  #Append the feedback types to the labels vector
+  labels <- c(labels, session_labels)
+}
+
+# labels vector must match the length of selected_components
+labels <- labels[1:nrow(selected_components)]
+```
+
+```{r, include = FALSE}
+labels <- as.factor(labels)
+
+# Split the data into training and test sets
+set.seed(42)
+train_indices <- createDataPartition(labels, p = 0.8, list = FALSE)
+train_data <- selected_components[train_indices, ]
+train_labels <- labels[train_indices]
+test_data <- selected_components[-train_indices, ]
+test_labels <- labels[-train_indices]
+```
+
+```{r, echo = FALSE}
+# Train a logistic regression classifier
+model2 <- glm(train_labels ~ ., data = as.data.frame(train_data), family = binomial)
+
+# Make predictions on the test data
+predictions2 <- predict(model2, newdata = as.data.frame(test_data), type = "response")
+
+# Convert predicted probabilities to class labels
+predictions2 <- ifelse(predictions2 > 0.5, 1, 0)
+
+print("Logistic Regression Classifier")
+
+accuracy2 <- sum(predictions2 == test_labels) / length(test_labels)
+print(paste("Accuracy:", accuracy2))
+
+misclassified2 <- sum(predictions2 != test_labels)
+
+error_rate2 <- misclassified2 / length(test_labels)
+
+print(paste("Misclassification Error Rate:", error_rate2))
+```
+I utilized the logistic regression classifier for training based on the provided training and testing data. By aggregating the predictions on the test data and dividing by the length of the test labels, I computed an accuracy score of approximately 64% and a misclassification error rate of roughly 36%. This implies that the model accurately predicts 64% of the instances within the dataset. While I aimed for a higher accuracy score considering the dataset's size, surpassing the 50% mark suggests that this is a reasonably effective model.
+...
+
+```{r, include = FALSE}
+labels <- as.factor(labels)
+
+# Split the data into training and test sets
+set.seed(42)
+train_indices <- createDataPartition(labels, p = 0.8, list = FALSE)
+train_data <- selected_components[train_indices, ]
+train_labels <- labels[train_indices]
+test_data <- selected_components[-train_indices, ]
+test_labels <- labels[-train_indices]
+```
+
+```{r, echo = FALSE}
+#train an SVM classifier
+model4 <- svm(train_data, train_labels)
+
+# Make predictions on the test data
+predictions4 <- predict(model4, test_data)
+
+print("SVM Classifier")
+
+accuracy4 <- sum(predictions4 == test_labels) / length(test_labels)
+print(paste("Accuracy:", accuracy4))
+
+misclassified4 <- sum(predictions4 != test_labels)
+
+error_rate4 <- misclassified4 / length(test_labels)
+
+print(paste("Misclassification Error Rate:", error_rate4))
+
+confusion_matrix <- table(predictions4, test_labels)
+
+print("Confusion Matrix:")
+print(confusion_matrix)
+true_positives <- confusion_matrix[2, 2]
+true_negatives <- confusion_matrix[1, 1]
+false_positives <- confusion_matrix[2, 1]
+false_negatives <- confusion_matrix[1, 2]
+
+precision <- true_positives / (true_positives + false_positives)
+recall <- true_positives / (true_positives + false_negatives)
+f1_score <- 2 * precision * recall / (precision + recall)
+
+print(paste("Precision:", precision))
+print(paste("F1 Score:", f1_score))
+```
+I utilized the support vector machines (SVM) classifier to train on the provided training and testing data. By summing up predictions on the test data and dividing by the length of the test labels, I determined an accuracy score of roughly 64% and a misclassification error rate of approximately 36%, demonstrating the model's ability to correctly predict 64% of instances within the dataset. While I aimed for a higher accuracy score considering the dataset's size, surpassing the 50% mark suggests a reasonably effective model. The confusion matrix illustrates true positives, true negatives, false positives, and false negatives, offering insights into prediction performance against actual class labels. With a precision score of 64%, indicating the proportion of correctly predicted true positive instances, and an f1-score of 78%, which combines precision and recall while considering false positives and false negatives, the SVM classifier emerges as a strong contender for my final prediction model.
+...
+
+```{r, include = FALSE}
+labels <- as.factor(labels)
+
+#split the data into training and test sets
+set.seed(42)
+train_indice <- createDataPartition(labels, p = 0.8, list = FALSE)
+train_data <- selected_components[train_indices, ]
+train_label <- labels[train_indices]
+test_data <- selected_components[-train_indices, ]
+test_label <- labels[-train_indices]
+```
+
+```{r, echo = FALSE}
+# Train a decision tree classifier
+model1 <- train(train_data, train_label, method = "rpart")
+
+# Make predictions on the test data
+predictions1 <- predict(model1, test_data)
+
+print("Decision Tree Classifier")
+
+accuracy1 <- sum(predictions1 == test_label) / length(test_label)
+print(paste("Accuracy:", accuracy1))
+
+misclassified1 <- sum(predictions1 != test_label)
+
+error_rate1 <- misclassified1 / length(test_label)
+
+print(paste("Misclassification Error Rate:", error_rate1))
+
+confusion_matrix <- table(predictions1, test_label)
+
+print("Confusion Matrix:")
+print(confusion_matrix)
+true_positives <- confusion_matrix[2, 2]
+true_negatives <- confusion_matrix[1, 1]
+false_positives <- confusion_matrix[2, 1]
+false_negatives <- confusion_matrix[1, 2]
+
+precision <- true_positives / (true_positives + false_positives)
+recall <- true_positives / (true_positives + false_negatives)
+f1_score <- 2 * precision * recall / (precision + recall)
+
+print(paste("Precision:", precision))
+print(paste("F1 Score:", f1_score))
+```
+I would like the accuracy score to be higher, but since it is above 50%, I would say that this is a decent model. The confusion matrix shows the true positives, true negatives, false positives, and false negatives of the predictions compared to the actual class labels.
+...
+```{r, include = FALSE}
+labels <- as.factor(labels)
+
+# Split the data into training and test sets
+set.seed(42) 
+train_indice <- createDataPartition(labels, p = 0.8, list = FALSE)
+train_data <- selected_components[train_indice, ]
+train_label <- labels[train_indice]
+test_data <- selected_components[-train_indice, ]
+test_label <- labels[-train_indice]
+```
+
+```{r, echo = FALSE}
+#train a KNN classifier
+model5 <- knn(train_data, test_data, train_label)
+
+print("K-Nearest Neighbors Classifier")
+
+accuracy5 <- sum(model5 == test_label) / length(test_label)
+print(paste("Accuracy:", accuracy5))
+
+misclassified5 <- sum(model5 != test_label)
+
+error_rate5 <- misclassified5 / length(test_label)
+
+print(paste("Misclassification Error Rate:", error_rate5))
+
+confusion_matrix <- table(model5, test_labels)
+
+print("Confusion Matrix:")
+print(confusion_matrix)
+true_positives <- confusion_matrix[2, 2]
+true_negatives <- confusion_matrix[1, 1]
+false_positives <- confusion_matrix[2, 1]
+false_negatives <- confusion_matrix[1, 2]
+
+precision <- true_positives / (true_positives + false_positives)
+recall <- true_positives / (true_positives + false_negatives)
+f1_score <- 2 * precision * recall / (precision + recall)
+
+print(paste("Precision:", precision))
+print(paste("F1 Score:", f1_score))
+```
+
+I conducted training of the k-nearest neighbors (KNN) classifier using the provided training and testing data. By aggregating predictions on the test data and dividing by the length of the test labels, I computed an accuracy score of approximately 45% and a misclassification error rate of around 55%. This indicates that the model accurately predicts 45% of instances within the dataset. Given that the accuracy score falls below 50%, I consider this model unsatisfactory. Therefore, I will not be utilizing it as my final prediction model.
+...
+
+```{r, include = FALSE}
+labels <- as.factor(labels)
+
+#split the data into training and test sets
+set.seed(42) 
+train_indice <- createDataPartition(labels, p = 0.8, list = FALSE)
+train_data <- selected_components[train_indice, ]
+train_label <- labels[train_indice]
+test_data <- selected_components[-train_indice, ]
+test_label <- labels[-train_indice]
+```
+
+```{r, echo = FALSE}
+#train a random forest classifier
+model3 <- randomForest(train_data, train_label)
+
+#make predictions on the test data
+predictions3 <- predict(model3, test_data)
+
+print("Random Forest Classifier")
+
+accuracy3 <- sum(predictions3 == test_label) / length(test_label)
+print(paste("Accuracy:", accuracy3))
+
+misclassified3 <- sum(predictions3 != test_label)
+
+error_rate3 <- misclassified3 / length(test_label)
+
+print(paste("Misclassification Error Rate:", error_rate3))
+
+confusion_matrix <- table(predictions3, test_label)
+
+print("Confusion Matrix:")
+print(confusion_matrix)
+true_positives <- confusion_matrix[2, 2]
+true_negatives <- confusion_matrix[1, 1]
+false_positives <- confusion_matrix[2, 1]
+false_negatives <- confusion_matrix[1, 2]
+
+precision <- true_positives / (true_positives + false_positives)
+recall <- true_positives / (true_positives + false_negatives)
+f1_score <- 2 * precision * recall / (precision + recall)
+
+print(paste("Precision:", precision))
+print(paste("F1 Score:", f1_score))
+```
+
+I conducted training of the random forest classifier using the provided training and testing data. By aggregating predictions on the test data and dividing by the length of the test labels, I computed an accuracy score of approximately 54% and a misclassification error rate of around 46%. This implies that the model accurately predicts 54% of instances within the dataset. While I aimed for a higher accuracy score given the dataset's size, surpassing the 50% mark suggests that this model is decent.
+***
+
+# Results/Prediction Performance
+
+I will now discuss the performance of my SVM prediction model based on the given test data.
+
+```{r, include = FALSE}
+setwd("/Users/emilycallahan/Downloads/sessions/")
+test=list()
+for(i in 1:2){
+  test[[i]]=readRDS(paste('./test/test',i,'.rds',sep=''))
+}
+```
+
+```{r, include = FALSE}
+#determine the maximum number of trials across all sessions
+max_trialstest <- max(sapply(test, function(x) length(x$spks)))
+
+#initialize an empty matrix to store the average spike matrix
+average_spike_matrixtest <- matrix(0, nrow = max_trialstest, ncol = 40)
+
+#initialize a counter to keep track of the number of trials in each session
+test_trial_counter <- rep(0, length(test))
+
+for (i in 1:length(test)) {
+  num_trialstest <- length(test[[i]]$spks)
+  
+  for (j in 1:num_trialstest) {
+    spike_matrixtest <- test[[i]]$spks[[j]]
+    
+    # Check if the spike matrix has more rows than the maximum number of trials
+    if (dim(spike_matrixtest)[1] > max_trialstest) {
+      spike_matrixtest <- spike_matrixtest[1:max_trialstest, ]
+    }
+    
+    #pad the spike matrix with zeros to match the maximum number of trials
+    padded_spike_matrixtest <- rbind(spike_matrixtest, matrix(0, nrow = max_trialstest - dim(spike_matrixtest)[1], ncol = 40))
+    
+    #add the spike counts to the average spike matrix
+    average_spike_matrixtest <- average_spike_matrixtest + padded_spike_matrixtest
+    
+    test_trial_counter[i] <- test_trial_counter[i] + 1
+  }
+}
+
+#calculate the average spike matrix for each session
+test_average_spike_matrix <- average_spike_matrixtest / test_trial_counter
+
+#convert session_average_spike_matrix to a dataframe
+test_average_spike_matrix_df <- as.data.frame(test_average_spike_matrix)
+```
+
+```{r, include = FALSE}
+pca_resulttest <- prcomp(test_average_spike_matrix, scale = TRUE)
+
+# Get the principal components
+principal_comptest <- pca_resulttest$x
+
+# Get the proportion of variance explained by each component
+variance_explainedtest <- pca_resulttest$sdev^2 / sum(pca_resulttest$sdev^2)
+```
+
+```{r, include = FALSE}
+num_comptest <-4
+selected_componentstest <- principal_comptest[, 1:num_comptest]
+```
+
+```{r, include = FALSE}
+labelstest <- numeric()
+
+for (test_num in 1:2) {
+  test_labels <- test[[test_num]]$feedback_type
+  
+  # Append the feedback types to the labels vector
+  labelstest <- c(labelstest, test_labels)
+}
+
+# labels vector must match the length of selected_components
+labelstest <- labelstest[1:nrow(selected_componentstest)]
+```
+
+```{r, include = FALSE}
+set.seed(42)
+
+# Split the data into training and test sets
+train_indices <- createDataPartition(labels, p = 0.8, list = FALSE)
+train_data <- selected_components[train_indices, ]
+train_labels <- labels[train_indices]
+test_data <- selected_componentstest
+test_labels <- labelstest
+```
+
+```{r, echo = FALSE}
+predictionstest <- predict(model4, test_data)
+
+confusion_matrix <- table(predictionstest, test_labels)
+
+misclassification_rate <- 1 - sum(diag(confusion_matrix)) / sum(confusion_matrix)
+
+accuracy_score <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+
+print("Confusion Matrix:")
+print(confusion_matrix)
+print(paste("Accuracy Score:", accuracy_score))
+print(paste("Misclassification Rate:", misclassification_rate))
+
+true_positives <- confusion_matrix[2, 2]
+true_negatives <- confusion_matrix[1, 1]
+false_positives <- confusion_matrix[2, 1]
+false_negatives <- confusion_matrix[1, 2]
+
+precision <- true_positives / (true_positives + false_positives)
+recall <- true_positives / (true_positives + false_negatives)
+f1_score <- 2 * precision * recall / (precision + recall)
+
+print(paste("Precision:", precision))
+print(paste("F1 Score:", f1_score))
+```
+
+After obtaining the average spike matrix across all sessions for the test data, I conducted PCA on the matrix and identified the first four principal components as the most significant, explaining a substantial proportion of variance in the dataset. Subsequently, I collected feedback types from all sessions and organized them into a variable, appending these feedback types to another vector. This enabled me to evaluate the accuracy of my SVM prediction model.I retained my original training data and replaced the simulated test data with the actual test data. By aggregating predictions on the test data and dividing by the length of the test labels, I computed an accuracy score of 72% and a misclassification error rate of 28%, indicating that the model correctly predicts 72% of instances within the dataset. This outcome is highly favorable. The confusion matrix provided insights into true positives, true negatives, false positives, and false negatives in comparison to actual class labels. With a precision score of 72%, signifying the proportion of correctly predicted true positive instances, and an f1-score of 84%, which integrates precision and recall while considering false positives and false negatives, the SVM classifier demonstrated strong performance as a prediction model for the test data, as corroborated by the results.
+
+
+# Conclusion/Discussion
+In conclusion, my project involved scrutinizing session discrepancies among mice and their corresponding success rates. This entailed delving into spikes per brain area across sessions and analyzing feedback types. Subsequently, I delved deeper into dataset visualization through density plots and a bootstrap distribution. 
+
+My focus shifted to PCA and clustering using the average spikes matrix spanning all trials and sessions. I visualized essential principal components via a scree plot, facilitating the interpretation of variance proportion in the dataset and guiding clustering decisions across various methodologies.
+
+Subsequently, I partitioned my dataset into 80% training data and 20% testing data, considering selected principal components. I rigorously tested multiple models to ascertain the highest accuracy scores, lowest misclassification error rates, and optimal precision and f1 scores. The culmination involved evaluating my final prediction model against provided test data, yielding commendable performance.
+
+The primary objective of this endeavor was crafting a predictive model to anticipate trial outcomes using neural activity data and stimuli. This aim was successfully achieved, holding significant practical implications for real-world applications, including forecasting human behavioral responses to stimuli.
+
+While navigating this expansive dataset posed challenges, particularly in identifying pertinent variables, clarity emerged as I refined my outcome objectives and applied appropriate visualization techniques.
+
+Moving forward, I envision exploring alternative classifiers to attain even higher accuracy and precision levels. This could involve experimentation with different variables, PCA configurations, and clustering methods. Nonetheless, the SVM classifier proved notably effective for my test data, underscoring its utility in predictive modeling.
+
+# References
+Steinmetz, N.A., Zatka-Haas, P., Carandini, M. et al. Distributed coding of choice, action and engagement across the mouse brain. Nature 576, 266–273 (2019). https://doi.org/10.1038/s41586-019-1787-x
+
+Utilized Chatgpt to check code, ask questions about test data, and questions about errors along the way.
+https://chat.openai.com/share/e2d002e6-53cf-484d-aedf-625c9baa83b9 
+
+***
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
+
+*** 
+
+# Appendix
+
+\begin{center} Appendix: R Script \end{center}
+
+```{r, ref.label=knitr::all_labels(),echo=TRUE,eval=FALSE}
+```
+
+
+
+
+
+
+
+
+
+
